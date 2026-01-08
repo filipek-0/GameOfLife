@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"net/rpc"
+	"strings"
+	"sync"
 	"time"
 
 	"uk.ac.bris.cs/gameoflife/stubs"
@@ -13,17 +15,24 @@ var (
 	inited = false
 	paused = false
 
-	pBroker *string
+	pBroker string
 	client  *rpc.Client
 
 	p Params
 	c distributorChannels
 
+	addresses           = make(chan string)
 	tickerTriggers      = make(chan bool)
 	keyListenerTriggers = make(chan bool)
 	pauseKeyPresses     = make(chan rune)
 
-	turns int
+	turnsToRun int
+
+	lastBackup  int64
+	backupWorld [][]byte
+	backupTurns int
+	backupAlive int
+	backupM     sync.Mutex
 )
 
 type distributorChannels struct {
@@ -36,6 +45,24 @@ type distributorChannels struct {
 	ioInput    <-chan uint8
 }
 
+func getCurrentStateAndBackup() ([][]byte, int, int) {
+	if time.Now().UnixMilli()-lastBackup > 2 {
+		request := stubs.CurrentStateRequest{}
+		response := new(stubs.CurrentStateResponse)
+		err := client.Call(stubs.CurrentStateHandler, request, response)
+		if err != nil {
+			panic(err)
+		}
+		backupM.Lock()
+		lastBackup = time.Now().UnixMilli()
+		backupWorld = response.World
+		backupTurns = p.Turns - turnsToRun + response.CompletedTurns
+		backupAlive = response.CellsCount
+		backupM.Unlock()
+	}
+	return backupWorld, backupTurns, backupAlive
+}
+
 // ticker report the number of cells that are still alive every 2 seconds when gol is running
 func ticker(seconds time.Duration) {
 	for {
@@ -44,17 +71,8 @@ func ticker(seconds time.Duration) {
 		for {
 			select {
 			case <-time.After(seconds * time.Second):
-				request := stubs.CountAliveRequest{}
-				response := new(stubs.CountAliveResponse)
-				err := client.Call(stubs.CountAliveHandler, request, response)
-				if err != nil {
-					panic(err)
-				}
-
-				c.events <- AliveCellsCount{
-					p.Turns - turns + response.CompletedTurns,
-					response.CellsCount,
-				}
+				_, turn, count := getCurrentStateAndBackup()
+				c.events <- AliveCellsCount{turn, count}
 			case <-tickerTriggers:
 				break out
 			}
@@ -79,44 +97,39 @@ func keyListener() {
 
 				switch key {
 				case 's':
-					response := new(stubs.CurrentStateResponse)
-					err := client.Call(stubs.CurrentStateHandler, stubs.CurrentStateRequest{}, response)
-					if err != nil {
-						panic(err)
-					}
-
-					outFile := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, response.CompletedTurns)
+					world, turn, _ := getCurrentStateAndBackup()
+					outFile := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, turn)
 					c.ioCommand <- ioOutput
 					c.ioFilename <- outFile
 
-					for i := range response.World {
-						for j := range response.World[i] {
-							c.ioOutput <- response.World[i][j]
+					for i := range world {
+						for j := range world[i] {
+							c.ioOutput <- world[i][j]
 						}
 					}
 
 					// Make sure that the Io has finished any output before exiting.
 					c.ioCommand <- ioCheckIdle
 					<-c.ioIdle
-					c.events <- ImageOutputComplete{response.CompletedTurns, outFile}
+					c.events <- ImageOutputComplete{turn, outFile}
 				case 'q':
 					err := client.Call(stubs.PauseHandler, stubs.PauseRequest{}, new(stubs.PauseResponse))
 					if err != nil {
-						panic(err)
+						fmt.Println(err)
 					}
 				case 'k':
 					err := client.Call(stubs.PauseHandler, stubs.PauseRequest{}, new(stubs.PauseResponse))
 					if err != nil {
-						panic(err)
+						fmt.Println(err)
 					}
-					err = client.Call(stubs.BrokerCloseHandler, stubs.CloseRequest{}, new(stubs.CloseResponse))
+					err = client.Call(stubs.CloseHandler, stubs.CloseRequest{true}, new(stubs.CloseResponse))
 					if err != nil {
-						panic(err)
+						fmt.Println(err)
 					}
 				case 'p':
 					err := client.Call(stubs.PauseHandler, stubs.PauseRequest{}, new(stubs.PauseResponse))
 					if err != nil {
-						panic(err)
+						fmt.Println(err)
 					}
 					paused = true
 				}
@@ -132,18 +145,31 @@ func distributor(params Params, channels distributorChannels) {
 	if !inited {
 		inited = true
 		// AWS 98.80.10.53
-		pBroker = flag.String("broker", "127.0.0.1:8030", "IP:port string to connect to as broker")
-		flag.Parse()
+		pBroker = flag.Arg(0)
+		if !strings.Contains(pBroker, ":") {
+			pBroker = "127.0.0.1:8030"
+		}
 
 		go ticker(2)
 		go keyListener()
+
+		var err error
+		client, err = rpc.Dial("tcp", pBroker)
+		if err != nil {
+			panic(err)
+		}
+
+		go func() {
+			response := new(stubs.AddressesResponse)
+			client.Call(stubs.AddressesHandler, stubs.AddressesRequest{}, response)
+			for _, addr := range response.Addresses {
+				addresses <- addr
+			}
+		}()
 	}
 
 	p = params
 	c = channels
-
-	client, _ = rpc.Dial("tcp", *pBroker)
-	defer client.Close()
 
 	c.ioCommand <- ioInput
 	c.ioFilename <- fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
@@ -159,17 +185,13 @@ func distributor(params Params, channels distributorChannels) {
 		}
 	}
 
-	turns = p.Turns
+	turnsToRun = p.Turns
 
 exe:
-	err := client.Call(stubs.PreBreakHandler, stubs.PreBreakRequest{}, new(stubs.PreBreakResponse))
-	if err != nil {
-		panic(err)
-	}
-	c.events <- StateChange{p.Turns - turns, Executing}
+	c.events <- StateChange{p.Turns - turnsToRun, Executing}
 
 	request := stubs.BreakWorldRequest{
-		Turns:       turns,
+		Turns:       turnsToRun,
 		Threads:     p.Threads,
 		ImageWidth:  p.ImageWidth,
 		ImageHeight: p.ImageHeight,
@@ -179,14 +201,41 @@ exe:
 
 	keyListenerTriggers <- true
 	tickerTriggers <- true
-	err = client.Call(stubs.BreakWorldHandler, request, response)
-	if err != nil {
-		panic(err)
-	}
+	err := client.Call(stubs.BreakWorldHandler, request, response)
 	tickerTriggers <- true
 	keyListenerTriggers <- true
 
-	currTurns := p.Turns - turns + response.CompletedTurns
+	for err != nil {
+		fmt.Println(err)
+		select {
+		case addr := <-addresses:
+			client, err = rpc.Dial("tcp", addr)
+			if err != nil {
+				continue
+			}
+			backupM.Lock()
+			if backupTurns > 0 {
+				turnsToRun = p.Turns - backupTurns
+				request.Turns = turnsToRun
+				request.World = backupWorld
+			}
+			backupM.Unlock()
+			response = new(stubs.BreakWorldResponse)
+
+			keyListenerTriggers <- true
+			tickerTriggers <- true
+			err = client.Call(stubs.BreakWorldHandler, request, response)
+			tickerTriggers <- true
+			keyListenerTriggers <- true
+		case <-time.After(2 * time.Second):
+			panic(err)
+		}
+	}
+
+	world = response.World
+	turnsToRun -= response.CompletedTurns
+
+	currTurns := p.Turns - turnsToRun
 
 	outputFile := func() {
 		outFile := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, currTurns)
@@ -219,7 +268,7 @@ exe:
 			paused = false
 			keyListenerTriggers <- true
 		case 'k':
-			err = client.Call(stubs.BrokerCloseHandler, stubs.CloseRequest{}, new(stubs.CloseResponse))
+			err = client.Call(stubs.CloseHandler, stubs.CloseRequest{}, new(stubs.CloseResponse))
 			if err != nil {
 				panic(err)
 			}
@@ -227,8 +276,6 @@ exe:
 			keyListenerTriggers <- true
 		case 'p':
 			paused = false
-			world = response.World
-			turns -= response.CompletedTurns
 			keyListenerTriggers <- true
 			goto exe
 		}

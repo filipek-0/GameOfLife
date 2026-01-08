@@ -5,16 +5,14 @@ import (
 )
 
 var (
-	SubscribeHandler    = "Broker.Subscribe"
-	PreBreakHandler     = "Broker.PreBreak"
-	BreakWorldHandler   = "Broker.BreakWorld"
-	CountAliveHandler   = "Broker.CountAlive"
-	CurrentStateHandler = "Broker.CurrentState"
-	PauseHandler        = "Broker.Pause"
-	BrokerCloseHandler  = "Broker.Close"
+	SubscribeHandler    = "GOLService.Subscribe"
+	AddressesHandler    = "GOLService.Addresses"
+	BreakWorldHandler   = "GOLService.BreakWorld"
+	CurrentStateHandler = "GOLService.CurrentState"
+	PauseHandler        = "GOLService.Pause"
+	CloseHandler        = "GOLService.Close"
 
-	RunWorldHandler    = "GOLOperations.RunWorld"
-	WorkerCloseHandler = "GOLOperations.Close"
+	RunWorldHandler = "GOLService.RunWorld"
 )
 
 type SubscribeResponse struct{}
@@ -23,9 +21,11 @@ type SubscribeRequest struct {
 	Address string
 }
 
-type PreBreakResponse struct{}
+type AddressesResponse struct {
+	Addresses []string
+}
 
-type PreBreakRequest struct{}
+type AddressesRequest struct{}
 
 type BreakWorldResponse struct {
 	CompletedTurns int
@@ -51,16 +51,10 @@ type RunWorldRequest struct {
 	WorldSlice [][]byte
 }
 
-type CountAliveResponse struct {
-	CompletedTurns int
-	CellsCount     int
-}
-
-type CountAliveRequest struct{}
-
 type CurrentStateResponse struct {
 	CompletedTurns int
 	World          [][]byte
+	CellsCount     int
 }
 
 type CurrentStateRequest struct{}
@@ -71,4 +65,6 @@ type PauseRequest struct{}
 
 type CloseResponse struct{}
 
-type CloseRequest struct{}
+type CloseRequest struct {
+	IsBroker bool
+}

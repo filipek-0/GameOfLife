@@ -13,9 +13,11 @@ This project implements parallel and distributed versions of Conway’s Game of 
 - Deployment-ready on cloud VMs (e.g. AWS EC2), with a configurable number of nodes
 - Support for multiple concurrent clients
 
+- Architecture of the pub-sub broker-based distributed _Game of Life_ system:
+  
   <img width="439.5" height="230" alt="image" src="https://github.com/user-attachments/assets/8ee0cbf6-d39d-4655-b43f-47271d57839d" />
 
-  Architecture of the pub-sub broker-based distributed _Game of Life_ system.
+  
 
 ## Results and Observations
 - The parallel implementation shows diminishing returns beyond a certain number of workers as the overheads incurred by goroutine scheduling dominates

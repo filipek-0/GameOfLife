@@ -26,3 +26,5 @@ go.work.sum
 .prof
 .zip
 out/
+.nano/
+.idea/

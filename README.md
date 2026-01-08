@@ -87,8 +87,9 @@ go test ./tests -v -run TestKeyboard -sdl
 ## Acknowledgements
 This project originated from a university coursework and was significantly extended beyond the standard concurrent and distributed architecture requirements.
 
-A provided SDL-based visualization skeleton was used as a starting point and extended to support the parallel and distributed implementations.
+The original coursework was completed collaboratively with  Filippos Babalitis and Harley Huang.
 
+A provided SDL-based visualization skeleton was used as a starting point and extended to support the parallel and distributed implementations.
 
 University of Bristol - Computer Systems A coursework
 
